@@ -1,15 +1,16 @@
 #! /usr/bin/python3
-from bottle import route, run, template, default_app, get
+from bottle import route, run, template, default_app, get, request, abort, response
 from bottle.ext import sqlalchemy
-from sqlalchemy import create_engine, Column, Integer, Sequence, String
+from sqlalchemy import create_engine, Column, Integer, Sequence, String, func
 from sqlalchemy.dialects.mysql import DATETIME, TIMESTAMP, TEXT
-
 from sqlalchemy.ext.declarative import declarative_base
+from json import dumps
 
 app = default_app()
 
 app.config.load_config('api.conf')
 app.config.setdefault('api.db', 'sqlite:///:memory:')
+app.config.setdefault('api.base', 'http://localhost:8080')
 
 Base = declarative_base()
 engine = create_engine(app.config['api.db'], echo=True)
@@ -59,11 +60,65 @@ class Work(Base):
 def index(name):
     return template('<b>Hello {{name}}</b>!', name=name)
 
-@get('/work/<id>')
-def get_work(id, db):
+#
+# This is a compatibility function for Elog.io clients. Clients
+# would also send src, context, page and per_page parameters. Tha
+# latter two for compatibility with RFC 5005 Link header. We ignore
+# everything other than hash at the moment and limit the search to
+# images specifically.
+#
+@get('/lookup/blockhash')
+def lookup_blockhash(db):
+    hash = request.query.hash
+    if not hash:
+        abort(400, 'hash is a required parameter')
+    if len(hash) != 64:
+        abort(400, 'hash must be a 256-bit hexadecimal encoded value')
+
+    entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < 10, Work.is_video == 0).limit(1000).all()
+    if not entity:
+        abort(404, 'no works found')
+    d = []
+    for row in entity:
+       d.append({'href': "%s/works/%s" % (app.config['api.base'], row.id),
+                 'distance': row.distance})
+
+    response.content_type = 'application/json'
+    return dumps(d)
+
+@get('/lookup/hash')
+def lookup_blockhash(db):
+    hash = request.query.hash
+    if not hash:
+        abort(400, 'hash is a required parameter')
+    if len(hash) != 64:
+        abort(400, 'hash must be a 256-bit hexadecimal encoded value')
+
+    method = request.query.method or 'blockhash'
+    distance = request.query.distance or 10
+    #
+    # We should implement a flexible limit / pager here, for now a hard
+    # limit of 1000 should be enough.
+    #
+    entity = db.query(Work).filter(func.hammingdistance(hash, Work.block_hash_code) < distance).limit(1000).all()
+    if not entity:
+        abort(404, 'no works found')
+    d = []
+    for row in entity:
+       d.append({'id': row.id, 'title': row.title})
+    response.content_type = 'application/json'
+    return dumps(d)
+
+@get('/works/<id>')
+def get_works(id, db):
     entity = db.query(Work).filter_by(id=id).first()
     if entity:
-        return {'id': entity.id, 'title': entity.title}
+        d = {}
+        for column in entity.__table__.columns:
+            d[column.name] = str(getattr(entity, column.name))
+
+        return d
+# {'id': entity.id, 'title': entity.title}
     return HTTPError(404, 'Entity not found.')
 
 

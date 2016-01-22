@@ -1,2 +1,3 @@
 [api]
 db=mysql+mysqlconnector://<username>:<password>@<host>/<db>
+base=http://example.com:8080/

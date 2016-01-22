@@ -1,0 +1,17 @@
+# This function calculates the hamming distance between two 256-bit
+# hashes expressed as a 64 character long hexadecimal number. This
+# should almost never be used for searching! Doing this in MySQL
+# is horrendously slow and may be okay for test environments or when
+# you have a low amount (< 50,000) rows. For production environments,
+# if needing to search by hamming distance, you're better of looking
+# at HmSearch or similar.
+
+create function HammingDistance(A VARCHAR(64), B VARCHAR(64))
+returns INT deterministic
+return
+  bit_count(conv(substring(A, 1,  16), 16, 10) ^ conv(substring(B, 1,  16), 16, 10)) +
+  bit_count(conv(substring(A, 17, 16), 16, 10) ^ conv(substring(B, 17, 16), 16, 10)) +
+  bit_count(conv(substring(A, 33, 16), 16, 10) ^ conv(substring(B, 33, 16), 16, 10)) +
+  bit_count(conv(substring(A, 49, 16), 16, 10) ^ conv(substring(B, 49, 16), 16, 10));
+
+
