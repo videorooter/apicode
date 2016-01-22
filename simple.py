@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, Column, Integer, Sequence, String, func
 from sqlalchemy.dialects.mysql import DATETIME, TIMESTAMP, TEXT
 from sqlalchemy.ext.declarative import declarative_base
 from json import dumps
+import string
 
 app = default_app()
 
@@ -62,10 +63,9 @@ def index(name):
 
 #
 # This is a compatibility function for Elog.io clients. Clients
-# would also send src, context, page and per_page parameters. Tha
-# latter two for compatibility with RFC 5005 Link header. We ignore
-# everything other than hash at the moment and limit the search to
-# images specifically.
+# would also send other parameters, which we ignore all of them,
+# including any compatibility with RFC 5005 Link. Also limit
+# the search to images only.
 #
 @get('/lookup/blockhash')
 def lookup_blockhash(db):
@@ -85,6 +85,95 @@ def lookup_blockhash(db):
 
     response.content_type = 'application/json'
     return dumps(d)
+
+#
+# Elog.io
+#
+#[
+#  {
+#    "href": "https://catalog.elog.io/works/5396e592d7d163613d7321ee",
+#    "uri": "http://some.where/foo.jpg",
+#    "property": "locator",
+#    "score": 100
+#  }
+#]
+#
+@get('/lookup/uri')
+def lookup_uri(db):
+    uri = request.query.uri
+
+    response.content_type = 'application/json'
+    return dumps([])
+
+# Elog.io
+# Clients could select which information to return, we ignore
+# this and return everything we know.
+#
+#{
+#  "id": "5396e592d7d163613d7321ee",
+#  "href": "https://catalog.elog.io/works/5396e592d7d163613d7321ee",
+#  "alias": "short-name",
+#  "description": "Description of work to guide catalog users (not part of the metadata)",
+#  "public": true,
+#  "annotations": [
+#    {
+#      "score": 100,
+#      "property": {
+#        "propertyName": "title",
+#        "value": "Title of the work",
+#        "titleLabel": "Title of the work"
+#      }
+#}
+# title
+# identifier
+# locator (URL)
+# copyright
+# policy - url for license
+# collection:
+# - http://commons.wikimedia.org
+@get('/works/<id>')
+def get_works(id, db):
+    entity = db.query(Work).filter_by(id=id).first()
+    if entity:
+        d = { 'id': entity.id,
+              'href': "%s/works/%s" % (app.config['api.base'], entity.id),
+              'public': 'true',
+              'description': entity.imagedescription }
+        d['annotations'] = []
+        d['annotations'].append({
+            'propertyName': 'title',
+            'language': 'en',
+            'titleLabel': entity.object_name })
+
+        # Identify that this is a wikimedia commons work
+        if entity.img_url.find('https://upload.wikimedia.org/wikipedia/commons') == 0:
+            identifier = "https://commons.wikimedia.org/wiki/%s" % entity.title
+            collection = "http://commons.wikimedia.org"
+        else:
+            abort(500, 'unknown collection in table')
+
+        d['annotations'].append({
+            'propertyName': 'identifier',
+            'identifierLink': identifier })
+        d['annotations'].append({
+            'propertyName': 'locator',
+            'locatorLink': entity.img_url })
+        d['annotations'].append({
+            'propertName': 'policy',
+            'statementLabel': entity.license_shortname,
+            'statementLink': entity.license_url,
+            'typeLabel': 'license',
+            'typeLink': 'http://www.w3.org/1999/xhtml/vocab#license' })
+        d['annotations'].append({
+            'propertyName': 'copyright',
+            'holderLabel': entity.artist })
+        d['annotations'].append({
+            'propertyName': 'collection',
+            'collectionLink': collection })
+
+        return d
+    abort(404, 'id not found')
+
 
 @get('/lookup/hash')
 def lookup_blockhash(db):
@@ -108,18 +197,6 @@ def lookup_blockhash(db):
        d.append({'id': row.id, 'title': row.title})
     response.content_type = 'application/json'
     return dumps(d)
-
-@get('/works/<id>')
-def get_works(id, db):
-    entity = db.query(Work).filter_by(id=id).first()
-    if entity:
-        d = {}
-        for column in entity.__table__.columns:
-            d[column.name] = str(getattr(entity, column.name))
-
-        return d
-# {'id': entity.id, 'title': entity.title}
-    return HTTPError(404, 'Entity not found.')
 
 
 run(host='0.0.0.0', port=8080)
