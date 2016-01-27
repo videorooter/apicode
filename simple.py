@@ -1,11 +1,12 @@
 #! /usr/bin/python3
-from bottle import route, run, template, default_app, get, request, abort, response
+from bottle import route, run, template, default_app, get, request, abort, response, redirect
 from bottle.ext import sqlalchemy
 from sqlalchemy import create_engine, Column, Integer, Sequence, String, func
 from sqlalchemy.dialects.mysql import DATETIME, TIMESTAMP, TEXT
 from sqlalchemy.ext.declarative import declarative_base
 from json import dumps
 import string
+from bs4 import BeautifulSoup
 
 app = default_app()
 
@@ -76,8 +77,24 @@ def lookup_blockhash(db):
         abort(400, 'hash must be a 256-bit hexadecimal encoded value')
 
     entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < 10, Work.is_video == 0).limit(1000).all()
-    if not entity:
-        abort(404, 'no works found')
+    d = []
+    for row in entity:
+       d.append({'href': "%s/works/%s" % (app.config['api.base'], row.id),
+                 'distance': row.distance})
+
+    response.content_type = 'application/json'
+    return dumps(d)
+
+# This includes video lookup
+@get('/lookup/video')
+def lookup_blockhash(db):
+    hash = request.query.hash
+    if not hash:
+        abort(400, 'hash is a required parameter')
+    if len(hash) != 64:
+        abort(400, 'hash must be a 256-bit hexadecimal encoded value')
+
+    entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < 10, Work.is_video == 1).limit(1000).all()
     d = []
     for row in entity:
        d.append({'href': "%s/works/%s" % (app.config['api.base'], row.id),
@@ -106,31 +123,27 @@ def lookup_uri(db):
     return dumps([])
 
 # Elog.io
+@get('/works/<id>/media')
+def get_works_media(id, db):
+    entity = db.query(Work).filter_by(id=id).first()
+    if entity:
+       d = { 'id': entity.id,
+             'href': "%s/works/%s/media" % (app.config['api.base'], entity.id),
+             'annotations' : [
+                {
+                   "property": {
+                      "propertyName" : "locator",
+                      "locatorLink" : entity.img_url
+                   }
+                }
+             ]
+           }
+       return d 
+    about(404, 'media not found')
+
+# Elog.io
 # Clients could select which information to return, we ignore
 # this and return everything we know.
-#
-#{
-#  "id": "5396e592d7d163613d7321ee",
-#  "href": "https://catalog.elog.io/works/5396e592d7d163613d7321ee",
-#  "alias": "short-name",
-#  "description": "Description of work to guide catalog users (not part of the metadata)",
-#  "public": true,
-#  "annotations": [
-#    {
-#      "score": 100,
-#      "property": {
-#        "propertyName": "title",
-#        "value": "Title of the work",
-#        "titleLabel": "Title of the work"
-#      }
-#}
-# title
-# identifier
-# locator (URL)
-# copyright
-# policy - url for license
-# collection:
-# - http://commons.wikimedia.org
 @get('/works/<id>')
 def get_works(id, db):
     entity = db.query(Work).filter_by(id=id).first()
@@ -138,7 +151,14 @@ def get_works(id, db):
         d = { 'id': entity.id,
               'href': "%s/works/%s" % (app.config['api.base'], entity.id),
               'public': 'true',
-              'description': entity.imagedescription }
+              'added_at': '2015-02-21T11:11:12.685Z',
+              'description': entity.imagedescription,
+              'owner': { 'org': { 'id': 1, 'href': 'http://example.com'}}
+            }
+
+        d['media'] = []
+        d['media'].append({ 'id': entity.id,
+                            'href': "%s/works/%s/media" % (app.config['api.base'], entity.id) })
         d['annotations'] = []
         d['annotations'].append({
             'propertyName': 'title',
@@ -165,12 +185,19 @@ def get_works(id, db):
             'typeLabel': 'license',
             'typeLink': 'http://www.w3.org/1999/xhtml/vocab#license' })
         d['annotations'].append({
-            'propertyName': 'copyright',
-            'holderLabel': entity.artist })
-        d['annotations'].append({
             'propertyName': 'collection',
             'collectionLink': collection })
 
+        # Process artist through Soup, since it often contain HTML code
+        soup = BeautifulSoup(entity.artist)
+
+        d['annotations'].append({
+            'propertyName': 'creator',
+            'creatorLabel': soup.get_text() })
+        d['annotations'].append({
+            'propertyName': 'copyright',
+            'holderLabel': soup.get_text() })
+        
         return d
     abort(404, 'id not found')
 
@@ -198,6 +225,18 @@ def lookup_blockhash(db):
     response.content_type = 'application/json'
     return dumps(d)
 
+@get('/random')
+def random(db):
+    type = request.query.type
+    entity = db.query(Work.id).order_by(func.rand())
+    if type == "video":
+        entity = entity.filter(Work.is_video == 1)
+    if type == "image":
+        entity = entity.filter(Work.is_video == 0)
+    entity = entity.first()
+    if not entity:
+        abort(404, 'no works found -- not a one!')
+    redirect('/works/%s' % entity.id)
 
 run(host='0.0.0.0', port=8080)
 
