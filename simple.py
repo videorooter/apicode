@@ -76,7 +76,11 @@ def lookup_blockhash(db):
     if len(hash) != 64:
         abort(400, 'hash must be a 256-bit hexadecimal encoded value')
 
-    entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < 10, Work.is_video == 0).limit(1000).all()
+    distance = 10   # Maximum value
+    if (request.query.distance and int(request.query.distance) <= distance):
+        distance = int(request.query.distance)
+
+    entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < distance, Work.is_video == 0).limit(1000).all()
     d = []
     for row in entity:
        d.append({'href': "%s/works/%s" % (app.config['api.base'], row.id),
@@ -94,7 +98,11 @@ def lookup_blockhash(db):
     if len(hash) != 64:
         abort(400, 'hash must be a 256-bit hexadecimal encoded value')
 
-    entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < 10, Work.is_video == 1).limit(1000).all()
+    distance = 40   # Maximum value
+    if (request.query.distance and int(request.query.distance) <= distance):
+        distance = int(request.query.distance)
+
+    entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < distance, Work.is_video == 1).limit(1000).all()
     d = []
     for row in entity:
        d.append({'href': "%s/works/%s" % (app.config['api.base'], row.id),
