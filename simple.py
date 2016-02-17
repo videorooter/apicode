@@ -44,8 +44,8 @@ class Work(Base):
     timestamp = Column(String(150))
     continue_code = Column(String(250))
     is_copied = Column(Integer)
-    black_hash = Column(String(150)) # To remove
-    gen_filename = Column(String(225))
+    mime_type_values = Column(String(150))
+    is_from_dump = Column(Integer)
     block_hash_code = Column(String(250))
     is_video = Column(Integer)
     inserted_date = Column(TIMESTAMP)
