@@ -1,9 +1,12 @@
 #! /usr/bin/python3
 from bottle import route, run, template, default_app, get, request, abort, response, redirect
 from bottle.ext import sqlalchemy
-from sqlalchemy import create_engine, Column, Integer, Sequence, String, func
-from sqlalchemy.dialects.mysql import DATETIME, TIMESTAMP, TEXT
+from sqlalchemy import create_engine, Column, Integer, Sequence, String, func, ForeignKey
+from sqlalchemy.dialects.mysql import DATETIME, TIMESTAMP, TEXT, INTEGER
 from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
+from sqlalchemy.orm import relationship, sessionmaker
+
 from json import dumps
 import string
 from bs4 import BeautifulSoup
@@ -26,37 +29,66 @@ plugin = sqlalchemy.Plugin(
 
 app.install(plugin)
 
-class Work(Base):
-    __tablename__ = 'article_images'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(String(150))
-    userid = Column(String(100))
-    img_url = Column(TEXT)
-    sha1 = Column(String(150))
-    artist = Column(String(250))
-    object_name = Column(String(250))
-    credit = Column(String(250))
-    usage_terms = Column(String(250))
-    license_url = Column(String(150))
-    license_shortname = Column(String(250))
-    imagedescription = Column(String(250))
-    copyrighted = Column(String(50))
-    timestamp = Column(String(150))
-    continue_code = Column(String(250))
-    is_copied = Column(Integer)
-    mime_type_values = Column(String(150))
-    is_from_dump = Column(Integer)
-    block_hash_code = Column(String(250))
-    is_video = Column(Integer)
-    inserted_date = Column(TIMESTAMP)
-    updated_date = Column(DATETIME)
-    api_from = Column(Integer)
+class Expression(Base):
+    __tablename__ = 'expression'
+    id = Column(INTEGER(unsigned=True, zerofill=True),
+                Sequence('expression_id_seq', start=1, increment=1),
+                primary_key = True)
+    title = Column(String(500))
+    description = Column(String(2048))
+    # 
+    # Allowed:  Any CC URI + defined by rightsstatements.org
+    #
+    rights_statement = Column(String(128))
+    credit = Column(String(500))
+    credit_url = Column(String(1024))
+    #
+    # http://wikimedia.org/
+    #
+    collection_url = Column(String(128))
+    source_id = Column(String(256))
+    updated_date = Column(TIMESTAMP, default=datetime.utcnow,
+                          nullable=False, onupdate=datetime.utcnow)
+    manifestation = relationship('Manifestation', backref="expression")
 
-    def __init__(self, name):
-        self.name = name
+class Manifestation(Base):
+    __tablename__ = 'manifestation'
+    id = Column(INTEGER(unsigned=True, zerofill=True),
+                Sequence('manifestation_id_seq', start=1, increment=1),
+                primary_key = True)
+    url = Column(String(500))
+    # 
+    # media_type:  image/jpeg image/gif  image/png video/mpeg video/mp4
+    #              video/ogg  video/webm audio/ogg
+    #
+    media_type = Column(String(64))
+    expression_id = Column(INTEGER(unsigned=True, zerofill=True), 
+                     ForeignKey('expression.id'))
+    fingerprint = relationship('Fingerprint', backref="manifestation")
 
-    def __repr__(self):
-        return "<Work('%d', '%s')>" % (self.id, self.name)
+class Fingerprint(Base):
+    __tablename__ = 'fingerprint'
+    id = Column(INTEGER(unsigned=True, zerofill=True),
+                Sequence('fingerprint_id_seq', start=1, increment=1),
+                primary_key = True)
+    #
+    #
+    type = Column(String(64))
+    hash = Column(String(256))
+    updated_date = Column(TIMESTAMP, default=datetime.utcnow,
+                          nullable=False, onupdate=datetime.utcnow)
+    manifestation_id = Column(INTEGER(unsigned=True, zerofill=True), 
+                     ForeignKey('manifestation.id'))
+ 
+
+hashers = {  
+             'http://videorooter.org/ns/blockhash': {
+                'types': ['image/png', 'image/jpg'],
+              },
+             'http://videorooter.org/ns/x-blockhash-video-cv': {
+                'types': ['video/mp4', 'video/mpeg', 'video/webm'],
+              },
+          }
 
 @route('/hello/<name>')
 def index(name):
@@ -80,10 +112,10 @@ def lookup_blockhash(db):
     if (request.query.distance and int(request.query.distance) <= distance):
         distance = int(request.query.distance)
 
-    entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < distance, Work.is_video == 0).limit(1000).all()
+    entity = db.query(Expression, Manifestation, Fingerprint, func.hammingdistance(hash, Fingerprint.hash).label('distance')).filter(func.hammingdistance(hash, Fingerprint.hash) < distance, Manifestation.media_type.in_(hashers['http://videorooter.org/ns/blockhash']['types']), Manifestation.id == Fingerprint.manifestation_id, Expression.id == Manifestation.expression_id ).limit(1000).all()
     d = []
     for row in entity:
-       d.append({'href': "%s/works/%s" % (app.config['api.base'], row.id),
+       d.append({'href': "%s/works/%s" % (app.config['api.base'], row.Expression.id),
                  'distance': row.distance})
 
     response.content_type = 'application/json'
@@ -102,10 +134,10 @@ def lookup_blockhash(db):
     if (request.query.distance and int(request.query.distance) <= distance):
         distance = int(request.query.distance)
 
-    entity = db.query(Work.id, func.hammingdistance(hash, Work.block_hash_code).label('distance')).filter(func.hammingdistance(hash, Work.block_hash_code) < distance, Work.is_video == 1).limit(1000).all()
+    entity = db.query(Expression, Manifestation, Fingerprint, func.hammingdistance(hash, Fingerprint.hash).label('distance')).filter(func.hammingdistance(hash, Fingerprint.hash) < distance, Manifestation.media_type.in_(hashers['http://videorooter.org/ns/x-blockhash-video-cv']['types']), Manifestation.id == Fingerprint.manifestation_id, Expression.id == Manifestation.expression_id ).limit(1000).all()
     d = []
     for row in entity:
-       d.append({'href': "%s/works/%s" % (app.config['api.base'], row.id),
+       d.append({'href': "%s/works/%s" % (app.config['api.base'], row.Expression.id),
                  'distance': row.distance})
 
     response.content_type = 'application/json'
@@ -133,15 +165,15 @@ def lookup_uri(db):
 # Elog.io
 @get('/works/<id>/media')
 def get_works_media(id, db):
-    entity = db.query(Work).filter_by(id=id).first()
+    entity = db.query(Expression,Manifestation).filter_by(Expression.id==id,Manifestation.expression_id == id).first()
     if entity:
        d = { 'id': entity.id,
-             'href': "%s/works/%s/media" % (app.config['api.base'], entity.id),
+             'href': "%s/works/%s/media" % (app.config['api.base'], entity.Expression.id),
              'annotations' : [
                 {
                    "property": {
                       "propertyName" : "locator",
-                      "locatorLink" : entity.img_url
+                      "locatorLink" : entity.Manifestation.url
                    }
                 }
              ]
@@ -154,50 +186,42 @@ def get_works_media(id, db):
 # this and return everything we know.
 @get('/works/<id>')
 def get_works(id, db):
-    entity = db.query(Work).filter_by(id=id).first()
+    entity = db.query(Expression, Manifestation).filter(Expression.id==id, Manifestation.expression_id==id).first()
     if entity:
-        d = { 'id': entity.id,
-              'href': "%s/works/%s" % (app.config['api.base'], entity.id),
+        d = { 'id': entity.Expression.id,
+              'href': "%s/works/%s" % (app.config['api.base'], entity.Expression.id),
               'public': 'true',
               'added_at': '2015-02-21T11:11:12.685Z',
-              'description': entity.imagedescription,
+              'description': entity.Expression.description,
               'owner': { 'org': { 'id': 1, 'href': 'http://example.com'}}
             }
 
         d['media'] = []
-        d['media'].append({ 'id': entity.id,
-                            'href': "%s/works/%s/media" % (app.config['api.base'], entity.id) })
+        d['media'].append({ 'id': entity.Expression.id,
+                            'href': "%s/works/%s/media" % (app.config['api.base'], entity.Expression.id) })
         d['annotations'] = []
         d['annotations'].append({
             'propertyName': 'title',
             'language': 'en',
-            'titleLabel': entity.object_name })
-
-        # Identify that this is a wikimedia commons work
-        if entity.img_url.find('https://upload.wikimedia.org/wikipedia/commons') == 0:
-            identifier = "https://commons.wikimedia.org/wiki/%s" % entity.title
-            collection = "http://commons.wikimedia.org"
-        else:
-            abort(500, 'unknown collection in table')
+            'titleLabel': entity.Expression.title })
 
         d['annotations'].append({
             'propertyName': 'identifier',
-            'identifierLink': identifier })
+            'identifierLink': entity.Expression.source_id })
         d['annotations'].append({
             'propertyName': 'locator',
-            'locatorLink': entity.img_url })
+            'locatorLink': entity.Manifestation.url })
         d['annotations'].append({
             'propertName': 'policy',
-            'statementLabel': entity.license_shortname,
-            'statementLink': entity.license_url,
+            'statementLink': entity.Expression.rights_statement,
             'typeLabel': 'license',
             'typeLink': 'http://www.w3.org/1999/xhtml/vocab#license' })
         d['annotations'].append({
             'propertyName': 'collection',
-            'collectionLink': collection })
+            'collectionLink': entity.Expression.collection_url })
 
         # Process artist through Soup, since it often contain HTML code
-        soup = BeautifulSoup(entity.artist)
+        soup = BeautifulSoup(entity.Expression.credit)
 
         d['annotations'].append({
             'propertyName': 'creator',
@@ -224,27 +248,27 @@ def lookup_blockhash(db):
     # We should implement a flexible limit / pager here, for now a hard
     # limit of 1000 should be enough.
     #
-    entity = db.query(Work).filter(func.hammingdistance(hash, Work.block_hash_code) < distance).limit(1000).all()
+    entity = db.query(Expression,Fingerprint,Manifestation).filter(func.hammingdistance(hash, Fingerprint.hash) < distance, Manifestation.id == Fingerprint.manifestation_id, Expression.id == Manifestation.expression_id).limit(1000).all()
     if not entity:
         abort(404, 'no works found')
     d = []
     for row in entity:
-       d.append({'id': row.id, 'title': row.title})
+       d.append({'id': row.Expression.id, 'title': row.Expression.title})
     response.content_type = 'application/json'
     return dumps(d)
 
 @get('/random')
 def random(db):
     type = request.query.type
-    entity = db.query(Work.id).order_by(func.rand())
+    entity = db.query(Expression,Manifestation,Fingerprint).order_by(func.rand()).filter(Expression.id==Manifestation.expression_id,Manifestation.id==Fingerprint.manifestation_id)
     if type == "video":
-        entity = entity.filter(Work.is_video == 1)
+        entity = entity.filter(Manifestation.media_type.in_(hashers['http://videorooter.org/ns/x-blockhash-video-cv']['types']))
     if type == "image":
-        entity = entity.filter(Work.is_video == 0)
+        entity = entity.filter(Manifestation.media_type.in_(hashers['http://videorooter.org/ns/blockhash']['types']))
     entity = entity.first()
     if not entity:
         abort(404, 'no works found -- not a one!')
-    redirect('/works/%s' % entity.id)
+    redirect('/works/%s' % entity.Expression.id)
 
 run(host='0.0.0.0', port=8080)
 
