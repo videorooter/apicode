@@ -1,11 +1,13 @@
 #! /usr/bin/python3
-from bottle import route, run, template, default_app, get, request, abort, response, redirect
+from bottle import route, run, template, default_app, get, request, abort, response, redirect, post
 from bottle.ext import sqlalchemy
-from sqlalchemy import create_engine, Column, Integer, Sequence, String, func, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, Sequence, String, func, ForeignKey, LargeBinary
 from sqlalchemy.dialects.mysql import DATETIME, TIMESTAMP, TEXT, INTEGER
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy_fulltext import FullText, FullTextSearch
+import random
 
 from json import dumps
 import string
@@ -16,9 +18,10 @@ app = default_app()
 app.config.load_config('api.conf')
 app.config.setdefault('api.db', 'sqlite:///:memory:')
 app.config.setdefault('api.base', 'http://localhost:8080')
+app.config.setdefault('api.queuedir', '/tmp')
 
 Base = declarative_base()
-engine = create_engine(app.config['api.db'], echo=True)
+engine = create_engine(app.config['api.db'], echo=False)
 
 plugin = sqlalchemy.Plugin(
     engine,
@@ -29,8 +32,9 @@ plugin = sqlalchemy.Plugin(
 
 app.install(plugin)
 
-class Expression(Base):
+class Expression(FullText, Base):
     __tablename__ = 'expression'
+    __fulltext_columns__ = ('description', 'title', 'credit')
     id = Column(INTEGER(unsigned=True, zerofill=True),
                 Sequence('expression_id_seq', start=1, increment=1),
                 primary_key = True)
@@ -79,16 +83,78 @@ class Fingerprint(Base):
                           nullable=False, onupdate=datetime.utcnow)
     manifestation_id = Column(INTEGER(unsigned=True, zerofill=True), 
                      ForeignKey('manifestation.id'))
- 
+
+class Queue(Base):
+    __tablename__ = 'queue'
+    id = Column(INTEGER(unsigned=True, zerofill=True),
+               Sequence('queue_id_seq', start=1, increment=1),
+               primary_key = True)
+    queryhash = Column(String(256))
+    requested_date = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    completed_date = Column(TIMESTAMP)
+    status = Column(INTEGER, default=0) # 0 = unprocessed, 1 = working, 2 = done
+    email = Column(String(256))
+    results = relationship('QueueResults', backref="queue")
+
+class QueueResults(Base):
+    __tablename__ = 'queue_results'
+    id = Column(INTEGER(unsigned=True, zerofill=True),
+               Sequence('queue_results_id_seq', start=1, increment=1),
+               primary_key = True)
+    qid = Column(INTEGER(unsigned=True, zerofill=True),
+                ForeignKey('queue.id'))
+    distance = Column(INTEGER)
+    expression_id = Column(INTEGER(unsigned=True, zerofill=True))
+
+Base.metadata.create_all(engine)
 
 hashers = {  
              'http://videorooter.org/ns/blockhash': {
+                'command': '/home/api/algorithms/commonsmachinery-blockhash/build/blockhash',   
                 'types': ['image/png', 'image/jpg'],
               },
              'http://videorooter.org/ns/x-blockhash-video-cv': {
-                'types': ['video/mp4', 'video/mpeg', 'video/webm'],
+                'command': '/home/api/algorithms/jonasob-blockhash-master/build/blockhash_video',
+                'types': ['video/mp4', 'video/mpeg', 'video/ogg', 'video/webm'],
               },
           }
+
+#
+# These are videorooter specific API calls following
+#
+@post('/videorooter/video')
+def videorooter_video(db):
+    # Takes two arguments: email - (option) email of the user requesting
+    #                      file - binary data with file
+    email = request.forms.get('email')
+    file = request.files.get('file') 
+    hash = "%032x" % random.getrandbits(128)
+    if (not file):
+      abort(400, 'file is a required parameter')
+
+    obj = Queue(queryhash = hash, email = email)
+    db.add(obj)
+    db.commit()
+
+    file.save("%s/%s" % (app.config['api.queuedir'], hash))
+    response.content_type = 'application/json'
+    s = { "process_id": hash }
+    return dumps(s)
+
+@get('/videorooter/results/<id>')
+def videorooter_results(id, db):
+    entity = db.query(Queue).filter_by(queryhash=id).first()
+    if not entity:
+       abort(404, 'Sorry. Invalid process number')
+    if entity.status < 2:
+       abort(202, 'Your search is being processed. Check back later for the results.')
+    d = []
+    for row in entity.results:
+       d.append({'href': "%s/works/%s" % (app.config['api.base'], row.expression_id),
+                 'distance': row.distance})
+    response.content_type = 'application/json'
+    return dumps(d)
+ 
 
 @route('/hello/<name>')
 def index(name):
@@ -120,6 +186,26 @@ def lookup_blockhash(db):
 
     response.content_type = 'application/json'
     return dumps(d)
+
+#
+# Does a lookup of text across the fields title, description and credit
+# 
+# NB: This requires a full text index:
+# create fulltext index fulltext_idx on expression (title, description, credit);
+#
+@get('/lookup/text')
+def lookup_text(db):
+    q = request.query.q
+    if not q:
+       abort(400, 'q is a required parameter')
+    entity = db.query(Expression).filter(FullTextSearch(q, Expression)).limit(1000).all()
+    d = []
+    for row in entity:
+       d.append({'href': "%s/works/%s" % (app.config['api.base'], row.id) })
+
+    response.content_type = 'application/json'
+    return dumps(d)
+
 
 # This includes video lookup
 @get('/lookup/video')
@@ -258,7 +344,7 @@ def lookup_blockhash(db):
     return dumps(d)
 
 @get('/random')
-def random(db):
+def randomwork(db):
     type = request.query.type
     entity = db.query(Expression,Manifestation,Fingerprint).order_by(func.rand()).filter(Expression.id==Manifestation.expression_id,Manifestation.id==Fingerprint.manifestation_id)
     if type == "video":
